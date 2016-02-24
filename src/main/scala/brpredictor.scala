@@ -32,6 +32,10 @@ class BrPredictorIo(fetch_width: Int)(implicit p: Parameters) extends BoomBundle
    val br_resolution = Valid(new BpdUpdate).flip // from branch-unit
    val brob = new BrobBackendIo(fetch_width)
    val flush = Bool(INPUT) // pipeline flush
+   
+   private val nBHT = 1 << log2Up(p(rocket.BtbKey).nEntries*2)
+   private val nbhtbits = log2Up(nBHT)
+   val bht_rollback_history = Bits(OUTPUT, width = nbhtbits) // the bht's ghistory is updated speculatively, so rollback as needed
 
    override def cloneType = new BrPredictorIo(fetch_width)(p).asInstanceOf[this.type]
 }
@@ -98,9 +102,18 @@ abstract class BrPredictor(fetch_width: Int, val history_length: Int)(implicit p
    private val r_ghistory = Reg(init = Bits(0, width = history_length))
 
    // we need to maintain a copy of the commit history, in-case we need to
-   // reset it on a pipeline flush/replay.
-   private val r_ghistory_commit_copy = Reg(init = Bits(0, width = history_length))
-
+   // reset it on a pipeline flush/replay. This copy is for BOOM's Branch Predictor.
+   private val r_bpd_ghistory_commit_copy = Reg(init = Bits(0, width = history_length))
+            
+   // we need to maintain a copy of the commit history, in-case we need to
+   // reset it on a pipeline flush/replay. This copy is for the Next-Line
+   // Predictor (Rocket's BTB), accessed via io.imem.bht_update.
+   // TODO we need better access to verify our history length matches the BTB's nBHT entries
+   private val nBHT = 1 << log2Up(p(rocket.BtbKey).nEntries*2)
+   private val nbhtbits = log2Up(nBHT)
+   private val r_nlp_ghistory_commit_copy = Reg(Bits(width = nbhtbits))
+   io.bht_rollback_history := r_nlp_ghistory_commit_copy
+            
 
    // Bypass some history modifications before it can be used by the predictor
    // hash functions. For example, "massage" the history for the scenario where
@@ -108,7 +121,7 @@ abstract class BrPredictor(fetch_width: Int, val history_length: Int)(implicit p
    // of the fetch_packet.
    private val fixed_history = Cat(io.br_resolution.bits.history, io.br_resolution.bits.taken)
    ghistory :=
-      Mux(io.flush,                                 r_ghistory_commit_copy,
+      Mux(io.flush,                                 r_bpd_ghistory_commit_copy,
       Mux(io.br_resolution.valid &&
           io.br_resolution.bits.bpd_mispredict &&
           io.br_resolution.bits.new_pc_same_packet, io.br_resolution.bits.history,
@@ -118,7 +131,7 @@ abstract class BrPredictor(fetch_width: Int, val history_length: Int)(implicit p
 
    when (io.flush)
    {
-      r_ghistory := r_ghistory_commit_copy
+      r_ghistory := r_bpd_ghistory_commit_copy
    }
    when (io.br_resolution.valid && io.br_resolution.bits.mispredict)
    {
@@ -137,18 +150,44 @@ abstract class BrPredictor(fetch_width: Int, val history_length: Int)(implicit p
 
    when (commit.valid)
    {
-      r_ghistory_commit_copy := Cat(r_ghistory_commit_copy, commit.bits.taken.reduce(_|_))
+      r_bpd_ghistory_commit_copy := Cat(r_bpd_ghistory_commit_copy, commit.bits.taken.reduce(_|_))
+   }
+ 
+   // -----------------------------------------------
+   
+   when (commit.valid && commit.bits.info.btb_resp_valid)
+   {
+      r_nlp_ghistory_commit_copy := Cat(commit.bits.taken.reduce(_|_), r_nlp_ghistory_commit_copy(nbhtbits-1,1))
    }
 
+   // -----------------------------------------------
+ 
    if (DEBUG_PRINTF)
    {
-      printf(" predictor: ghist: 0x%x, r_ghist: 0x%x commit: 0x%x\n"
+      printf(" predictor: ghist: 0x%x, r_ghist: 0x%x commit: 0x%x, bht_comghist: 0x%x \n"
          , ghistory
          , r_ghistory
-         , r_ghistory_commit_copy
+         , r_bpd_ghistory_commit_copy
+         , r_nlp_ghistory_commit_copy
          )
    }
 }
+ 
+//------------------------------------------------------------------------------
+//------------------------------------------------------------------------------
+
+// act as a "null" branch predictor (it makes no predictions).
+// However, we need to instantiate a branch predictor, as it contains the Branch
+// ROB which tracks all of the inflight prediction state and performs the
+// updates at commit as necessary.
+class NullBrPredictor(fetch_width: Int
+                     , history_length: Int = 12
+   )(implicit p: Parameters) extends BrPredictor(fetch_width, history_length)(p)
+{
+   io.resp.valid := Bool(false)
+   io.resp.bits := new BpdResp().fromBits(Bits(0))
+}
+
 
 //------------------------------------------------------------------------------
 //------------------------------------------------------------------------------
@@ -191,12 +230,14 @@ class BrobEntry(fetch_width: Int)(implicit p: Parameters) extends BoomBundle()(p
    val executed   = Vec.fill(fetch_width) {Bool()} // mark that a branch executed (and should update the predictor).
    val taken      = Vec.fill(fetch_width) {Bool()}
    val mispredict = Vec.fill(fetch_width) {Bool()} // did bpd mispredict this br? (aka, should we update the predictor).
+   val btb_predicted = Bool() // did the BTB make a prediction for this fetch packet?
    val brob_idx   = UInt(width = BROB_ADDR_SZ)
 
    val debug_executed = Bool() // did a br or jalr get executed? verify we're not deallocating an empty entry.
    val debug_rob_idx = UInt(width = ROB_ADDR_SZ)
 
-   val info = new BpdResp
+//   val info = new BpdResp
+   val info = new BranchPredictionResp
 
   override def cloneType: this.type = new BrobEntry(fetch_width).asInstanceOf[this.type]
 }
@@ -324,15 +365,16 @@ class BranchReorderBuffer(fetch_width: Int, num_entries: Int)(implicit p: Parame
    {
       for (i <- 0 until num_entries)
       {
-         printf (" brob[%d] (%x) T=%x m=%x r=%d, hist=%x, 0x%x, br_upd_idx=%d "
+         printf(" brob[%d] (%x) T=%x m=%x r=%d, hist=%x, 0x%x, br_upd_idx=%d bht_history=%x"
             , UInt(i, log2Up(num_entries))
             , entries(i).executed.toBits
             , entries(i).taken.toBits
             , entries(i).mispredict.toBits
             , entries(i).debug_rob_idx
-            , entries(i).info.info.history
-            , entries(i).info.info.index
+            , entries(i).info.bpd_resp.info.history
+            , entries(i).info.bpd_resp.info.index
             , idx
+            , entries(i).info.btb_resp.bht.history
             )
 
          printf("%s\n"

@@ -482,8 +482,6 @@ class DatPath(implicit p: Parameters) extends BoomModule()(p)
    io.imem.btb_update.bits.isJump     := Mux(br_unit.btb_update_valid, br_unit.btb_update.isJump, bp2_is_jump)
    io.imem.btb_update.bits.isReturn   := Mux(br_unit.btb_update_valid, br_unit.btb_update.isReturn, Bool(false))
 
-   io.imem.bht_update := br_unit.bht_update
-
    io.imem.invalidate := Range(0,DECODE_WIDTH).map{i => com_valids(i) && com_uops(i).is_fencei}.reduce(_|_)
 
    //-------------------------------------------------------------
@@ -502,6 +500,10 @@ class DatPath(implicit p: Parameters) extends BoomModule()(p)
    bpd_stage.io.br_unit := br_unit
    bpd_stage.io.kill := flush_take_pc
    bpd_stage.io.req.ready := !if_stalled
+    
+   io.imem.bht_update := br_unit.bht_update
+   io.imem.bht_update.bits.rollback.valid := flush_pipeline
+   io.imem.bht_update.bits.rollback.bits.history := bpd_stage.io.bht_rollback_history
 
    bp2_take_pc := bpd_stage.io.req.valid
    bp2_pred_target := bpd_stage.io.req.bits.target
@@ -754,7 +756,7 @@ class DatPath(implicit p: Parameters) extends BoomModule()(p)
    bpd_stage.io.brob.allocate.bits.debug_executed := Bool(false)
    bpd_stage.io.brob.allocate.bits.debug_rob_idx := dis_uops(0).rob_idx
    bpd_stage.io.brob.allocate.bits.brob_idx := dis_uops(0).brob_idx
-   bpd_stage.io.brob.allocate.bits.info := dec_fbundle.pred_resp.bpd_resp
+   bpd_stage.io.brob.allocate.bits.info := dec_fbundle.pred_resp
 
 
    //-------------------------------------------------------------

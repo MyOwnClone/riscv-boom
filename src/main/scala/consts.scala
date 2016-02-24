@@ -20,8 +20,8 @@ import cde.Parameters
 
 trait BOOMDebugConstants
 {
-   val DEBUG_PRINTF        = false // use the Chisel printf functionality
-   val DEBUG_ENABLE_COLOR  = false // provide color to print outs. Requires a VIM plugin to work properly :(
+   val DEBUG_PRINTF        = true  // use the Chisel printf functionality
+   val DEBUG_ENABLE_COLOR  = true  // provide color to print outs. Requires a VIM plugin to work properly :(
    val COMMIT_LOG_PRINTF   = false // dump commit state, for comparision against ISA sim
 
    // turn off stuff to dramatically reduce Chisel node count

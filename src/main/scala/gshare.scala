@@ -30,7 +30,7 @@ class BrTableUpdate(implicit p: Parameters) extends BoomBundle()(p)
 class GShareResp(implicit p: Parameters) extends BoomBundle()(p)
 {
    val history = Bits(width = GHIST_LENGTH) // stored in snapshots (dealloc after Execute)
-   val index =  Bits(width = GHIST_LENGTH) // needed to update predictor at Commit
+   val index = Bits(width = GHIST_LENGTH) // needed to update predictor at Commit
 }
 
 class GshareBrPredictor(fetch_width: Int
@@ -56,7 +56,7 @@ class GshareBrPredictor(fetch_width: Int
    val hwq = Module(new Queue(new BrobEntry(fetch_width), entries=4))
    hwq.io.enq <> commit
 
-   val u_addr = commit.bits.info.info.index
+   val u_addr = commit.bits.info.bpd_resp.info.index
 
 
    //------------------------------------------------------------
@@ -107,8 +107,7 @@ class GshareBrPredictor(fetch_width: Int
    hwq.io.deq.ready := !h_ren
    when (!h_ren && hwq.io.deq.valid)
    {
-      // TODO post ChiselIssue. Chisel needs to be able to have SeqMem take a Vec of Bools
-      val waddr = hwq.io.deq.bits.info.info.index
+      val waddr = hwq.io.deq.bits.info.bpd_resp.info.index
       val wmask = hwq.io.deq.bits.executed
       val wdata = Vec(hwq.io.deq.bits.taken.map(_.toUInt))
       h_table.write(waddr, wdata, wmask)

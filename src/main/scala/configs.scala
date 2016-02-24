@@ -34,12 +34,12 @@ class DefaultBOOMConfig extends Config (
 
          // Front-end
          case EnableBTB => true // for now, only gates off updates to BTB
-         case EnableBTBContainsBranches => false // don't send branches to BTB
+         case EnableBTBContainsBranches => true // don't send branches to BTB
          case BtbKey => BtbParameters(enabled = true, nEntries = 64, nRAS = 8, updatesOutOfOrder = true)
          case FetchBufferSz => 4
 
          // Branch Predictor
-         case EnableBranchPredictor => true
+         case EnableBranchPredictor => false
          case BranchPredictorSizeInKB => Knob("BPD_SIZE_IN_KB")
 
          // Pipelining
@@ -57,10 +57,10 @@ class DefaultBOOMConfig extends Config (
    knobValues = {
       case "NTiles" => 1
       case "FETCH_WIDTH" => 2
-      case "ISSUE_WIDTH" => 3
+      case "ISSUE_WIDTH" => 2
       case "ROB_ENTRIES" => 48
-      case "ISSUE_ENTRIES" => 20
-      case "LSU_ENTRIES" => 16
+      case "ISSUE_ENTRIES" => 10
+      case "LSU_ENTRIES" => 8
       case "PHYS_REGISTERS" => 110
       case "MAX_BR_COUNT" => 8
       case "AGE_PRIORITY_ISSUE" => true
